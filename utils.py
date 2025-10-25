@@ -1,20 +1,45 @@
 import csv
+from pathlib import Path
+from typing import Dict, Any
 
 import h5py
 import torch
+import yaml
 from tqdm import tqdm
 
 from model import MicrobiomeTransformer
 
 
-WGS_RUN_TABLE = 'data/SraRunTable_wgs.csv'
-EXTRA_RUN_TABLE = 'data/SraRunTable_extra.csv'
-MICROBEATLAS_SAMPLES = 'data/microbeatlas_samples.tsv'
-SAMPLES_TABLE = 'data/samples.csv'
-BIOM_PATH = 'data/samples-otus.97.metag.minfilter.minCov90.noMulticell.rod2025companion.biom'
-CHECKPOINT_PATH = 'data/checkpoint_epoch_0_final_epoch3_conf00.pt'
-PROKBERT_PATH = 'data/prokbert_embeddings.h5'
+def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
+    """
+    Load configuration from YAML file.
+    
+    Args:
+        config_path: Path to the YAML configuration file
+        
+    Returns:
+        Dictionary containing configuration parameters
+    """
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    return config
 
+
+# Load default configuration
+_DEFAULT_CONFIG = load_config()
+
+
+def get_config() -> Dict[str, Any]:
+    """Get the current configuration."""
+    return _DEFAULT_CONFIG
+
+
+# Model architecture constants (hardcoded - not configurable)
 D_MODEL = 100
 NHEAD = 5
 NUM_LAYERS = 5
@@ -25,11 +50,32 @@ TXT_EMB = 1536
 
 
 def load_run_data(
-    wgs_path=WGS_RUN_TABLE,
-    extra_path=EXTRA_RUN_TABLE,
-    samples_path=SAMPLES_TABLE,
-    microbeatlas_path=MICROBEATLAS_SAMPLES,
+    wgs_path=None,
+    extra_path=None,
+    samples_path=None,
+    microbeatlas_path=None,
+    config=None,
 ):
+    """
+    Load and merge run data from multiple sources.
+    
+    Args:
+        wgs_path: Path to WGS run table (default from config)
+        extra_path: Path to extra run table (default from config)
+        samples_path: Path to samples table (default from config)
+        microbeatlas_path: Path to microbeatlas samples (default from config)
+        config: Configuration dictionary (default: global config)
+        
+    Returns:
+        Tuple of (run_rows, SRA_to_micro, gid_to_sample, micro_to_subject, micro_to_sample)
+    """
+    if config is None:
+        config = get_config()
+    
+    wgs_path = wgs_path or config['data']['wgs_run_table']
+    extra_path = extra_path or config['data']['extra_run_table']
+    samples_path = samples_path or config['data']['samples_table']
+    microbeatlas_path = microbeatlas_path or config['data']['microbeatlas_samples']
     run_rows = {}
     SRA_to_micro = {}
     gid_to_sample = {}
@@ -89,8 +135,25 @@ def load_run_data(
 def collect_micro_to_otus(
     SRA_to_micro,
     micro_to_subject,
-    biom_path=BIOM_PATH,
+    biom_path=None,
+    config=None,
 ):
+    """
+    Collect OTU data for microbiome samples.
+    
+    Args:
+        SRA_to_micro: Mapping from SRA run IDs to microbiome sample IDs
+        micro_to_subject: Mapping from microbiome sample IDs to subject IDs
+        biom_path: Path to BIOM file (default from config)
+        config: Configuration dictionary (default: global config)
+        
+    Returns:
+        Dictionary mapping microbiome sample IDs to lists of OTU IDs
+    """
+    if config is None:
+        config = get_config()
+    
+    biom_path = biom_path or config['data']['biom_path']
     micro_to_otus = {}
     needed_srs = set(SRA_to_micro.values()) | set(micro_to_subject.keys())
 
@@ -126,7 +189,22 @@ def collect_micro_to_otus(
     return micro_to_otus
 
 
-def load_microbiome_model(checkpoint_path=CHECKPOINT_PATH):
+def load_microbiome_model(checkpoint_path=None, config=None):
+    """
+    Load pre-trained microbiome transformer model.
+    
+    Args:
+        checkpoint_path: Path to model checkpoint (default from config)
+        config: Configuration dictionary (default: global config)
+        
+    Returns:
+        Tuple of (model, device)
+    """
+    if config is None:
+        config = get_config()
+    
+    checkpoint_path = checkpoint_path or config['data']['checkpoint_path']
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint['model_state_dict']
@@ -150,7 +228,22 @@ def load_microbiome_model(checkpoint_path=CHECKPOINT_PATH):
     return model, device
 
 
-def preview_prokbert_embeddings(prokbert_path=PROKBERT_PATH, limit=10):
+def preview_prokbert_embeddings(prokbert_path=None, limit=10, config=None):
+    """
+    Preview available ProkBERT embeddings.
+    
+    Args:
+        prokbert_path: Path to ProkBERT embeddings file (default from config)
+        limit: Maximum number of example IDs to show
+        config: Configuration dictionary (default: global config)
+        
+    Returns:
+        List of example embedding IDs
+    """
+    if config is None:
+        config = get_config()
+    
+    prokbert_path = prokbert_path or config['data']['prokbert_path']
     with h5py.File(prokbert_path) as emb_file:
         embedding_group = emb_file['embeddings']
         example_ids = []
@@ -168,9 +261,29 @@ def build_sample_embeddings(
     micro_to_otus,
     model,
     device,
-    prokbert_path=PROKBERT_PATH,
-    txt_emb=TXT_EMB,
+    prokbert_path=None,
+    txt_emb=None,
+    config=None,
 ):
+    """
+    Build sample embeddings from OTU embeddings.
+    
+    Args:
+        micro_to_otus: Dictionary mapping microbiome sample IDs to OTU lists
+        model: Pre-trained microbiome transformer model
+        device: PyTorch device
+        prokbert_path: Path to ProkBERT embeddings file (default from config)
+        txt_emb: Text embedding dimension (hardcoded constant if not provided)
+        config: Configuration dictionary (default: global config)
+        
+    Returns:
+        Tuple of (sample_embeddings dict, missing_otus count)
+    """
+    if config is None:
+        config = get_config()
+    
+    prokbert_path = prokbert_path or config['data']['prokbert_path']
+    txt_emb = txt_emb or TXT_EMB
     sample_embeddings = {}
     missing_otus = 0
 

@@ -4,7 +4,9 @@ This repo explores linking DIABIMMUNE cohort metadata to MicrobeAtlas samples, e
 
 ### Contents
 
+- `config.yaml` – centralized YAML configuration for all run parameters (data paths, model architecture, cross-validation settings). See `CONFIG_GUIDE.md` for details.
 - `utils.py` – lightweight helpers to
+  - load configuration from YAML
   - read SRA run tables, MicrobeAtlas, and DIABIMMUNE metadata  
   - align SRS ↔ sample ↔ subject IDs  
   - load the transformer checkpoint (`checkpoint_epoch_0_final_epoch3_conf00.pt`)  
@@ -31,6 +33,12 @@ This repo explores linking DIABIMMUNE cohort metadata to MicrobeAtlas samples, e
    - `microbeatlas_samples.tsv`, `samples-otus...biom`
    - `prokbert_embeddings.h5`
    - `checkpoint_epoch_0_final_epoch3_conf00.pt`
+3. (Optional) Customize `config.yaml` to modify:
+   - Data file paths
+   - Cross-validation settings (k-folds, random seed, logistic regression hyperparameters)
+   
+   Note: Model architecture parameters are hardcoded to match the pre-trained checkpoint.
+   See `CONFIG_GUIDE.md` for detailed configuration options.
 
 ### Workflow
 

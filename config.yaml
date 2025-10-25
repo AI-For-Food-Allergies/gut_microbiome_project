@@ -1,0 +1,20 @@
+# Configuration file for gut microbiome project
+
+# Data file paths
+data:
+  wgs_run_table: "data/SraRunTable_wgs.csv"
+  extra_run_table: "data/SraRunTable_extra.csv"
+  microbeatlas_samples: "data/microbeatlas_samples.tsv"
+  samples_table: "data/samples.csv"
+  biom_path: "data/samples-otus.97.metag.minfilter.minCov90.noMulticell.rod2025companion.biom"
+  checkpoint_path: "data/checkpoint_epoch_0_final_epoch3_conf00.pt"
+  prokbert_path: "data/prokbert_embeddings.h5"
+
+# Cross-validation parameters
+cross_validation:
+  k_folds: 5
+  random_state: 42
+  max_iter: 1000
+  class_weight: "balanced"
+  solver: "lbfgs"
+

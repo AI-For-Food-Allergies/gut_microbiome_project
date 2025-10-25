@@ -5,7 +5,11 @@ from utils import (
     load_microbiome_model,
     preview_prokbert_embeddings,
     build_sample_embeddings,
+    get_config,
 )
+
+# Load configuration
+config = get_config()
 
 #%%
 run_rows, SRA_to_micro, gid_to_sample, micro_to_subject, micro_to_sample = load_run_data()
@@ -122,7 +126,7 @@ original_counts = {label: len(records) for label, records in label_groups.items(
 print('original class counts:', original_counts)
 
 minority_count = min(original_counts.values())
-rng = np.random.default_rng(42)
+rng = np.random.default_rng(config['cross_validation']['random_state'])
 balanced_records = []
 for label, records in label_groups.items():
     if len(records) > minority_count:
@@ -180,7 +184,11 @@ for start, end in bin_ranges:
         print('Skipping bin', (start, end), 'because it lacks class diversity.')
         continue
 
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    skf = StratifiedKFold(
+        n_splits=config['cross_validation']['k_folds'], 
+        shuffle=True, 
+        random_state=config['cross_validation']['random_state']
+    )
     class_scores = {label: [] for label in label_encoder.classes_}
     macro_scores = []
     fold_predictions = []
@@ -192,9 +200,9 @@ for start, end in bin_ranges:
         y_test = y[test_idx]
 
         clf = LogisticRegression(
-            max_iter=1000,
-            solver='lbfgs',
-            class_weight='balanced'
+            max_iter=config['cross_validation']['max_iter'],
+            solver=config['cross_validation']['solver'],
+            class_weight=config['cross_validation']['class_weight']
         )
         clf.fit(X_train, y_train)
         probas = clf.predict_proba(X_test)

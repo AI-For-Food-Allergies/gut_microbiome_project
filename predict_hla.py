@@ -5,7 +5,11 @@ from utils import (
     load_microbiome_model,
     preview_prokbert_embeddings,
     build_sample_embeddings,
+    get_config,
 )
+
+# Load configuration
+config = get_config()
 
 #%%
 run_rows, SRA_to_micro, gid_to_sample, micro_to_subject, micro_to_sample = load_run_data()
@@ -123,7 +127,7 @@ for record in model_records:
     label_groups[record['label']].append(record)
 
 minority_count = min(len(records) for records in label_groups.values() if records)
-rng = np.random.default_rng(42)
+rng = np.random.default_rng(config['cross_validation']['random_state'])
 balanced_records = []
 for label, records in label_groups.items():
     if not records:
@@ -195,12 +199,16 @@ bin_index = np.array(bin_index, dtype=np.int64)
 prob_scores = np.zeros(len(y_encoded), dtype=np.float32)
 pred_labels = np.zeros(len(y_encoded), dtype=np.int64)
 
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+skf = StratifiedKFold(
+    n_splits=config['cross_validation']['k_folds'], 
+    shuffle=True, 
+    random_state=config['cross_validation']['random_state']
+)
 for train_idx, test_idx in skf.split(X, y_encoded):
     clf = LogisticRegression(
-        max_iter=1000,
-        solver='lbfgs',
-        class_weight='balanced'
+        max_iter=config['cross_validation']['max_iter'],
+        solver=config['cross_validation']['solver'],
+        class_weight=config['cross_validation']['class_weight']
     )
     clf.fit(X[train_idx], y_encoded[train_idx])
     probas = clf.predict_proba(X[test_idx])[:, 1]
