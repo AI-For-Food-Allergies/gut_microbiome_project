@@ -2,6 +2,16 @@
 
 This document provides an analysis of the current code structure in the `modularize-training` branch of the `AI-For-Food-Allergies/gut_microbiome_project` repository and outlines the necessary interventions as defined by the open GitHub issues.
 
+## Table of Contents
+
+1. [Current Code Structure](#1-current-code-structure)
+
+2. [Open issues](#2-open-issues)
+3. [Development Roadmap](#3-development-roadmap)
+
+4. [How to Contribute](#4-how-to-contribute)
+
+
 ## 1. Current Code Structure
 
 ### 1.1. High-Level Overview
@@ -67,3 +77,80 @@ Once the core components are modularized, they can be integrated into the main e
 5.  **Configuration Refinement:** Review `config.yaml` and ensure all new modules and scripts correctly reference the configuration parameters.
 6.  **Documentation:** Update the main `README.md` to reflect the new modular structure and provide clear instructions on how to run the `train.py` and `evaluation/evaluate.py` scripts.
 7.  **Deprecation:** Remove or clearly mark the legacy/notebook-like scripts in `example_scripts/` to prevent confusion.
+
+## 4. How to Contribute
+
+We welcome contributions to this project! Follow these steps to contribute effectively:
+
+### 4.1. Getting Started
+
+1.  **Fork the Repository:** Create your own fork of the project on GitHub.
+2.  **Clone Your Fork:** Clone the repository to your local machine:
+    ```bash
+    git clone https://github.com/YOUR_USERNAME/gut_microbiome_project.git
+    cd gut_microbiome_project
+    ```
+3.  **Set Up the Environment:** Install the project dependencies using your preferred package manager:
+    ```bash
+    pip install -e .
+    ```
+    or if using `uv`:
+    ```bash
+    uv sync
+    ```
+
+### 4.2. Making Changes
+
+1.  **Create a Branch:** Always create a new branch for your work. Use a descriptive name:
+    ```bash
+    git checkout -b feature/your-feature-name
+    ```
+    or
+    ```bash
+    git checkout -b fix/issue-number-description
+    ```
+
+2.  **Follow the Development Roadmap:** Refer to Section 3 to understand the current priorities and ensure your contribution aligns with the project goals.
+
+3.  **Write Clean Code:**
+
+    *   Keep functions focused and modular.
+    *   Use type hints where appropriate.
+
+4.  **Test Your Changes:** Ensure your code works as expected and doesn't break existing functionality.
+
+### 4.3. Submitting Your Contribution
+
+1.  **Commit Your Changes:** Write clear, concise commit messages:
+    ```bash
+    git add .
+    git commit -m "Add feature: brief description of what you did"
+    ```
+
+2.  **Push to Your Fork:**
+    ```bash
+    git push origin feature/your-feature-name
+    ```
+
+3.  **Open a Pull Request:**
+    *   Navigate to the original repository on GitHub.
+    *   Click "New Pull Request" and select your branch.
+    *   Provide a clear description of your changes, referencing any related issues (e.g., "Closes #8").
+    *   Wait for review and address any feedback.
+
+### 4.4. Contribution Guidelines
+
+*   **Focus on Open Issues:** Check the issues listed in Section 2 and prioritize work that addresses them.
+*   **Keep PRs Focused:** Each pull request should address a single issue or feature.
+*   **Document Your Work:** Update relevant documentation (README, docstrings) as needed.
+*   **Be Responsive:** Respond to code review comments and be open to suggestions.
+*   **Respect the Structure:** Follow the modular architecture outlined in this document.
+
+### 4.5. Need Help?
+
+If you have questions or need guidance:
+*   Open an issue on GitHub to discuss your proposed changes.
+*   Reach out to the maintainers for clarification on architectural decisions.
+*   Review the `README.md` and `CONFIG_GUIDE.md` for additional context.
+
+Thank you for contributing to the gut microbiome project!
