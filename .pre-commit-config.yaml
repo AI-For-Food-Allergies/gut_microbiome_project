@@ -1,0 +1,91 @@
+# Pre-commit hooks configuration for GUT_MICROBIOME_PROJECT
+# Install: pip install pre-commit
+# Setup: pre-commit install
+# Run all hooks: pre-commit run --all-files
+
+default_language_version:
+  python: python3
+
+repos:
+  # Ruff for linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff
+        args: [--fix, --extend-ignore=EXE001]
+      - id: ruff-format
+
+  # Type checking with mypy
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - types-PyYAML
+          - types-requests
+          - torch
+          - numpy
+        args: [--ignore-missing-imports, --install-types, --non-interactive]
+
+  # Security: Bandit (static security analysis)
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.10
+    hooks:
+      - id: bandit
+        args: [--recursive, --quiet]
+        exclude: ^(tests/|examples/)
+
+  # Detect secrets and API keys (commented out for now)
+  # Once we start integrating with cloud services (AWS, HuggingFace Hub, W&B, etc.),
+  # this hook would be invaluable. It catches accidentally committed API keys,
+  # tokens, or credentials before they ever hit the remote repo.
+  # A single leaked key can be a mess — revocation, reissue, CI rebuilds, the whole dance.
+  # - repo: https://github.com/Yelp/detect-secrets
+  #   rev: v1.4.0
+  #   hooks:
+  #     - id: detect-secrets
+  #       args: ['--baseline', '.secrets.baseline']
+
+  # General code hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: ^mkdocs\.yml$
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: check-ast
+      - id: check-added-large-files
+        args: ['--maxkb=500']  # prevent big models/datasets
+
+  # Commit message linting (Conventional Commits)
+  - repo: https://github.com/jorisroovers/gitlint
+    rev: v0.19.1
+    hooks:
+      - id: gitlint
+
+  # Documentation build check
+  - repo: local
+    hooks:
+      - id: docs-build
+        name: Build documentation
+        entry: uv run mkdocs build
+        language: system
+        files: ^(docs/|mkdocs\.yml)$
+        pass_filenames: false
+        description: Ensure documentation builds successfully
+
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit.com hooks
+
+    for more information, see https://pre-commit.ci
+  autofix_prs: true
+  autoupdate_branch: ''
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: []
+  submodules: true
