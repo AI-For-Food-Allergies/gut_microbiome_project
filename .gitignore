@@ -25,4 +25,3 @@ data_preprocessing/dna_sequences/*
 # DNA embeddings - ignore all contents except .gitkeep
 data_preprocessing/dna_embeddings/*
 !data_preprocessing/dna_embeddings/.gitkeep
-working_notes
