@@ -1,22 +1,21 @@
 import pandas as pd
 import os
 
-def preprocess_gadir(input_csv: str, output_csv: str = None):
+def preprocess_gadir(input_csv: str, output_dir: str = None):
     """
-    Preprocess the Gadir metadata CSV file to create a binary classification dataset.
+    Preprocess the Gadir metadata CSV file and create separate CSV files for each age group.
     
     Parameters:
     -----------
     input_csv : str
         Path to the input CSV file (gadir_metadata.csv)
-    output_csv : str, optional
-        Path to the output CSV file. If None, defaults to 'gadir_preprocessed.csv'
-        in the same directory as input_csv.
+    output_dir : str, optional
+        Directory to save output CSV files. If None, defaults to the same directory as input_csv.
     
     Returns:
     --------
-    pd.DataFrame
-        The preprocessed dataframe with Run and label columns
+    dict
+        Dictionary mapping age_group names to their corresponding DataFrames
     """
     # Load the dataset
     df = pd.read_csv(input_csv)
@@ -40,30 +39,70 @@ def preprocess_gadir(input_csv: str, output_csv: str = None):
     
     df['label'] = df['Group'].map(label_mapping)
     
-    # Select only Run and label columns
-    df_preprocessed = df[['Run', 'label']].copy()
+    # Create age groups based on 4-6 month sampling intervals
+    # Study samples infants every 4-6 months for up to 30 months
+    def assign_age_group(age):
+        """Assign age group based on 6-month sampling intervals."""
+        if pd.isna(age):
+            return None
+        age = float(age)
+        if age < 6:
+            return '0-6_months'
+        elif age < 12:
+            return '6-12_months'
+        elif age < 18:
+            return '12-18_months'
+        elif age < 24:
+            return '18-24_months'
+        elif age < 30:
+            return '24-30_months'
+        else:
+            return '30+_months'
+    
+    # Add age group column if Age_at_Collection exists
+    if 'Age_at_Collection' not in df.columns:
+        raise ValueError("Age_at_Collection column not found in the input CSV file.")
+    
+    df['age_group'] = df['Age_at_Collection'].apply(assign_age_group)
     
     # Ensure proper data types
-    df_preprocessed['Run'] = df_preprocessed['Run'].astype(str)
-    df_preprocessed['label'] = df_preprocessed['label'].astype(int)
+    df['Run'] = df['Run'].astype(str)
+    df['label'] = df['label'].astype(int)
     
-    # Set output path if not provided
-    if output_csv is None:
-        input_dir = os.path.dirname(input_csv)
-        output_csv = os.path.join(input_dir, 'gadir_preprocessed.csv')
+    # Set output directory if not provided
+    if output_dir is None:
+        output_dir = os.path.dirname(input_csv)
     
-    # Save to CSV
-    df_preprocessed.to_csv(output_csv, index=False)
+    # Group by age_group and create separate CSV files
+    age_groups = df['age_group'].dropna().unique()
+    grouped_dataframes = {}
     
-    # Verify no missing values and warn if found
-    missing_runs = df_preprocessed['Run'].isna().sum()
-    missing_labels = df_preprocessed['label'].isna().sum()
-    if missing_runs > 0 or missing_labels > 0:
-        print(f"Warning: Found missing values!")
-        print(f"  Missing Run IDs: {missing_runs}")
-        print(f"  Missing labels: {missing_labels}")
+    for age_group in sorted(age_groups):
+        # Filter data for this age group
+        df_group = df[df['age_group'] == age_group][['Run', 'label']].copy()
+        
+        # Create output filename
+        output_filename = f'gadir_preprocessed_{age_group}.csv'
+        output_path = os.path.join(output_dir, "downloaded_data", output_filename)
+        
+        # Save to CSV
+        df_group.to_csv(output_path, index=False)
+        grouped_dataframes[age_group] = df_group
+        
+        # Verify no missing values for this group
+        missing_runs = df_group['Run'].isna().sum()
+        missing_labels = df_group['label'].isna().sum()
+        if missing_runs > 0 or missing_labels > 0:
+            print(f"Warning: Found missing values in {age_group}!")
+            print(f"  Missing Run IDs: {missing_runs}")
+            print(f"  Missing labels: {missing_labels}")
     
-    return df_preprocessed
+    # Handle samples with missing age_group (if any)
+    df_missing_age = df[df['age_group'].isna()]
+    if len(df_missing_age) > 0:
+        print(f"Warning: {len(df_missing_age)} samples have missing age_group and were excluded.")
+    
+    return grouped_dataframes
 
 if __name__ == "__main__":
     # Get the directory of this script
