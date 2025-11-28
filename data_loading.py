@@ -18,8 +18,9 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import yaml
 import os
-
+from utils import load_config
 from modules.model import MicrobiomeTransformer
+
 
 # Try to import transformers (needed for embedding generation)
 try:
@@ -196,7 +197,7 @@ def generate_dna_csvs_for_samples(
     return generated_paths
 
 
-def generate_embeddings_h5(
+def generate_dna_embeddings_h5(
     dna_csv_dir: Path,
     output_h5_path: Path,
     model_name: str = 'neuralbioinfo/prokbert-mini-long',
@@ -239,11 +240,12 @@ def generate_embeddings_h5(
     model = model.to(device_obj)
     model.eval()
     
-    # Create output directory if needed
-    output_h5_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create output directory 
+    output_h5_path.mkdir(parents=True, exist_ok=True)
+    output_h5_path_file = output_h5_path / 'dna_embeddings.h5'
     
     # Create/open HDF5 file
-    with h5py.File(output_h5_path, 'w') as hdf5_file:
+    with h5py.File(output_h5_path_file, 'w') as hdf5_file:
         # Process each CSV file (one per SRS ID)
         for csv_file in tqdm(csv_files, desc="Processing SRS samples"):
             # Extract SRS ID from filename
@@ -393,7 +395,7 @@ def ensure_embeddings_exist(
     
     # Generate embeddings H5
     print("Generating embeddings H5 file...")
-    generate_embeddings_h5(
+    generate_dna_embeddings_h5(
         paths['dna_csv_dir'],
         embeddings_h5,
         paths['model_name'],
@@ -889,17 +891,6 @@ def generate_microbiome_embeddings_h5(
     Output layout:
       /<sid> -> (d_model,) float32
     """
-    # Exit if already exists
-    if output_h5_path.exists():
-        print(f"Microbiome embeddings H5 already exists at {output_h5_path}")
-        return output_h5_path
-
-    # Check input H5 exists
-    if not prokbert_h5_path.exists():
-        raise FileNotFoundError(
-            f"ProkBERT embeddings H5 not found: {prokbert_h5_path}"
-        )
-
     device_obj = torch.device(device)
 
     # Checkpoint values from example_scripts/utils
@@ -929,7 +920,8 @@ def generate_microbiome_embeddings_h5(
     model.to(device_obj)
     model.eval()
 
-    output_h5_path.parent.mkdir(parents=True, exist_ok=True)
+    output_h5_path.mkdir(parents=True, exist_ok=True)
+    output_h5_path_file = output_h5_path / 'microbiome_embeddings.h5'
 
     with h5py.File(prokbert_h5_path, "r") as h_in:
         sample_ids = list(h_in.keys())
@@ -938,7 +930,7 @@ def generate_microbiome_embeddings_h5(
                 f"ProkBERT H5 file {prokbert_h5_path} contains no sample groups."
             )
 
-        with h5py.File(output_h5_path, "w") as h_out:
+        with h5py.File(output_h5_path_file, "w") as h_out:
             for srs_id in tqdm(sample_ids, desc="Building microbiome sample embeddings"):
                 srs_group = h_in[srs_id]
                 otu_ids = list(srs_group.keys())
@@ -973,65 +965,183 @@ def generate_microbiome_embeddings_h5(
     print(f"\nSaved microbiome sample embeddings to {output_h5_path}")
     return output_h5_path
 
+def build_paths(config):
+    # extract dataset name and csv file name from dataset path (example: tanaka, month_2.csv)
+    dataset_name = dataset_path.parent.name
+    dataset_csv_name = dataset_path.name.split('.')[0]
 
+    sequences_dir = Path(config["data"]["dna_csv_dir"] + "/" + dataset_name + "/" + dataset_csv_name)
+    dna_embeddings_dir = Path(config["data"]["dna_embeddings_dir"] + "/" + dataset_name + "/" + dataset_csv_name)
+    microbiome_embeddings_dir = Path(config["data"]["microbiome_embeddings_dir"] + "/" + dataset_name + "/" + dataset_csv_name)
+    return sequences_dir, dna_embeddings_dir, microbiome_embeddings_dir
 
+def extract_csv_sequences(sequences_dir: Path, config: dict):
+    # Load sample IDs from CSV
+    labels_dict = load_labels(config["data"]["dataset_path"])
+    sids = list(labels_dict.keys())
+    
+    print(f"Extracting CSV sequences for {len(sids)} samples")      
+    generate_dna_csvs_for_samples(
+        sids,
+        config['data']['srs_to_otu_parquet'],
+        config['data']['otu_to_dna_parquet'],
+        sequences_dir
+    )
+    
+def sanity_check_dna_and_microbiome_embeddings(dna_embeddings_dir: Path, microbiome_embeddings_dir: Path):
+    """
+    Sanity check for consistency on dna embeddings and microbiome embeddings
+    Args:
+        dna_embeddings_dir: Path to dna embeddings directory
+        microbiome_embeddings_dir: Path to microbiome embeddings directory
+    Returns:
+        True if sanity check is passed
+    Raises:
+        FileNotFoundError: If DNA embeddings H5 file not found
+        FileNotFoundError: If Microbiome embeddings H5 file not found
+        ValueError: If DNA embeddings and microbiome embeddings have different number of samples
+        ValueError: If DNA embeddings and microbiome embeddings have different sample IDs
+    """
+    
+    dna_embeddings_h5_path = dna_embeddings_dir / 'dna_embeddings.h5'
+    microbiome_embeddings_h5_path = microbiome_embeddings_dir / 'microbiome_embeddings.h5'
+    if not dna_embeddings_h5_path.exists():
+        raise FileNotFoundError(f"DNA embeddings H5 file not found: {dna_embeddings_h5_path}")
+    if not microbiome_embeddings_h5_path.exists():
+        raise FileNotFoundError(f"Microbiome embeddings H5 file not found: {microbiome_embeddings_h5_path}")
+    if len(inspect_embeddings_h5(dna_embeddings_h5_path)) != len(inspect_embeddings_h5(microbiome_embeddings_h5_path)):
+        raise ValueError(f"DNA embeddings and microbiome embeddings have different number of samples")
+    if set(inspect_embeddings_h5(dna_embeddings_h5_path)) != set(inspect_embeddings_h5(microbiome_embeddings_h5_path)):
+        raise ValueError(f"DNA embeddings and microbiome embeddings have different sample IDs")
+    print("DNA embeddings and microbiome embeddings are consistent")
+    return True
+
+def create_dataset_df(dataset_path: Path, microbiome_embeddings_dir: Path):
+    """
+    Iterate through the csv ids, take the label and use the id to look in the h5 file to get the microbiome embedding, then create a dataframe with the id, label, and microbiome embedding
+    Args:
+        dataset_path: Path to dataset csv
+        microbiome_embeddings_dir: Path to microbiome embeddings directory
+    Returns:
+        DataFrame with id, label, and microbiome embedding
+    """
+    dataset_df = pd.read_csv(dataset_path)
+    microbiome_embeddings_h5_path = microbiome_embeddings_dir / 'microbiome_embeddings.h5'
+    
+    if not microbiome_embeddings_h5_path.exists():
+        raise FileNotFoundError(f"Microbiome embeddings H5 file not found: {microbiome_embeddings_h5_path}")
+    
+    # Read embeddings from H5 file using h5py
+    embeddings_data = []
+    with h5py.File(microbiome_embeddings_h5_path, 'r') as h5f:
+        for sid in h5f.keys():
+            embedding = h5f[sid][:]  # (D_MODEL,) numpy array
+            embeddings_data.append({'sid': sid, 'embedding': embedding})
+    
+    microbiome_embeddings_df = pd.DataFrame(embeddings_data)
+    dataset_df = dataset_df.merge(microbiome_embeddings_df, left_on='sid', right_on='sid', how='left')
+    
+    return dataset_df
 
 # ==================== Example Usage ====================
 
 if __name__ == "__main__":
     # Example usage
-    sample_csv = Path("data_preprocessing/datasets/sample_data.csv")
+    config_path = Path("config.yaml")
+    config = load_config(config_path)
+    dataset_path = Path(config["data"]["dataset_path"]) # example: data_preprocessing/datasets/tanaka/month_2.csv
     
-    try:
-        print("Creating DataLoader...")
-        dataloader = get_dataloader(
-            sample_csv,
-            batch_size=4,
-            shuffle=True
-        )
-        
-        print(f"\nDataLoader created with {len(dataloader.dataset)} samples")
-        
-        # Test a batch
-        for batch in dataloader:
-            print(f"\nBatch shapes:")
-            print(f"  embeddings: {batch['embeddings'].shape}")
-            print(f"  labels: {batch['labels'].shape}")
-            print(f"  mask: {batch['mask'].shape}")
-            print(f"  sids: {batch['sids']}")
-            break
-    except FileNotFoundError as e:
-        print(f"\nFile Not Found Error:")
-        print(f"{e}")
-        print("\nTo fix this issue:")
-        print("  1. Check that the CSV file path is correct")
-        print("  2. Ensure the file exists at the specified location")
-        print("  3. Use absolute paths if relative paths are causing issues")
-    except ValueError as e:
-        print(f"\nValue Error: {e}")
-        print("\nTo fix this issue:")
-        print("  1. Check that your sample CSV contains the correct sample IDs")
-        print("  2. Ensure embeddings H5 contains matching sample IDs")
-        print("  3. If needed, delete the H5 file and regenerate embeddings:")
-        print(f"     rm data/prokbert_embeddings.h5")
-        print("     Then run this script again to auto-generate embeddings")
-    except Exception as e:
-        print(f"\nUnexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # === MICROBIOME EMBEDDINGS: build microbiome embeddings AFTER PROKBERT H5 ===
-    try:
-        paths = get_default_paths()
-        print("\nBuilding microbiome sample embeddings from ProkBERT H5...")
+    sequences_dir, dna_embeddings_dir, microbiome_embeddings_dir = build_paths(config)
+    
+    # 1) extract csv sequences from dataset
+    if not sequences_dir.exists():
+        # if not already extracted
+        extract_csv_sequences(sequences_dir, config)
+    else:
+        print(f"CSV sequences already exist at {sequences_dir}, skipping extraction")
+    
+    # 2) generate dna embeddings from csv sequences
+    if not dna_embeddings_dir.exists():
+        generate_dna_embeddings_h5(sequences_dir, 
+                                dna_embeddings_dir, 
+                                config["data"]["embedding_model"],
+                                batch_size=config["data"]["batch_size_embedding"],
+                                device=config["data"]["device"])
+    else:
+        print(f"DNA embeddings already exist at {dna_embeddings_dir}, skipping generation")
+    
+    # 3) generate microbiome embeddings from dna embeddings
+    if not microbiome_embeddings_dir.exists():
+        dna_embeddings_h5_path = dna_embeddings_dir / 'dna_embeddings.h5'
         generate_microbiome_embeddings_h5(
-            prokbert_h5_path=paths["embeddings_h5"],
-            output_h5_path=paths["microbiome_embeddings_h5"],
-            checkpoint_path=paths["checkpoint_path"],
-            device=paths["device"],
+            dna_embeddings_h5_path,
+            microbiome_embeddings_dir,
+            config["data"]["mirobiome_transformer_checkpoint"],
+            device=config["data"]["device"]
         )
-    except Exception as e:
-        print("\nError while generating microbiome embeddings:")
-        print(e)
-        import traceback
-        traceback.print_exc()
+    else:
+        print(f"Microbiome embeddings already exist at {microbiome_embeddings_dir}, skipping generation")
+    
+    # sanity check for consistency on dna embeddings and microbiome embeddings
+    if not sanity_check_dna_and_microbiome_embeddings(dna_embeddings_dir, microbiome_embeddings_dir):
+        raise ValueError("DNA embeddings and microbiome embeddings are not consistent")
+    else:
+        print("Data sanity check passed")
+    
+    # create dataframe relating labels from dataset csv and corresponding microbiome embeddings
+    dataset_df = create_dataset_df(dataset_path, microbiome_embeddings_dir)
+    print(f"Created dataset dataframe with {len(dataset_df)} rows and {len(dataset_df.columns)} columns")
+    
+    # try:
+    #     print("Creating DataLoader...")
+    #     dataloader = get_dataloader(
+    #         dataset_path,
+    #         batch_size=4,
+    #         shuffle=True
+    #     )
+        
+    #     print(f"\nDataLoader created with {len(dataloader.dataset)} samples")
+        
+    #     # Test a batch
+    #     for batch in dataloader:
+    #         print(f"\nBatch shapes:")
+    #         print(f"  embeddings: {batch['embeddings'].shape}")
+    #         print(f"  labels: {batch['labels'].shape}")
+    #         print(f"  mask: {batch['mask'].shape}")
+    #         print(f"  sids: {batch['sids']}")
+    #         break
+    # except FileNotFoundError as e:
+    #     print(f"\nFile Not Found Error:")
+    #     print(f"{e}")
+    #     print("\nTo fix this issue:")
+    #     print("  1. Check that the CSV file path is correct")
+    #     print("  2. Ensure the file exists at the specified location")
+    #     print("  3. Use absolute paths if relative paths are causing issues")
+    # except ValueError as e:
+    #     print(f"\nValue Error: {e}")
+    #     print("\nTo fix this issue:")
+    #     print("  1. Check that your sample CSV contains the correct sample IDs")
+    #     print("  2. Ensure embeddings H5 contains matching sample IDs")
+    #     print("  3. If needed, delete the H5 file and regenerate embeddings:")
+    #     print(f"     rm data/prokbert_embeddings.h5")
+    #     print("     Then run this script again to auto-generate embeddings")
+    # except Exception as e:
+    #     print(f"\nUnexpected error: {e}")
+    #     import traceback
+    #     traceback.print_exc()
+
+    # # === MICROBIOME EMBEDDINGS: build microbiome embeddings AFTER PROKBERT H5 ===
+    # try:
+    #     paths = get_default_paths()
+    #     print("\nBuilding microbiome sample embeddings from ProkBERT H5...")
+    #     generate_microbiome_embeddings_h5(
+    #         prokbert_h5_path=paths["embeddings_h5"],
+    #         output_h5_path=paths["microbiome_embeddings_h5"],
+    #         checkpoint_path=paths["checkpoint_path"],
+    #         device=paths["device"],
+    #     )
+    # except Exception as e:
+    #     print("\nError while generating microbiome embeddings:")
+    #     print(e)
+    #     import traceback
+    #     traceback.print_exc()
