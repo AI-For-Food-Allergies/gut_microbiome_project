@@ -4,6 +4,7 @@ Unified Data Loading Pipeline
 This module provides a complete pipeline for loading microbiome data:
 1. Sample CSV (SID, label) → Artifacts (DNA CSVs, Embeddings H5) → PyTorch DataLoader
 2. Handles artifact generation, caching, and efficient data loading
+3. Generates per sample embeddings from prokbert_embeddings
 """
 
 from pathlib import Path
@@ -17,6 +18,8 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import yaml
 import os
+
+from modules.model import MicrobiomeTransformer
 
 # Try to import transformers (needed for embedding generation)
 try:
@@ -60,6 +63,14 @@ def get_default_paths(config: dict = None) -> dict:
         'embeddings_h5': Path(data_config.get(
             'embeddings_h5',
             'data_preprocessing/dna_embeddings/prokbert_embeddings.h5'
+        )),
+        'microbiome_embeddings_h5':Path(data_config.get(
+            'microbiome_embeddings_h5',
+            'data_preprocessing/microbiome_embeddings/microbiome_embeddings.h5'
+        )),
+        'checkpoint_path': Path(data_config.get(
+            'checkpoint_path',
+            'data/checkpoint_epoch_0_final_epoch3_conf00.pt'
         )),
         'model_name': data_config.get(
             'embedding_model',
@@ -531,6 +542,67 @@ def load_embeddings_for_sample(
         return None
 
 
+def load_microbiome_embeddings_dataset(
+    sample_csv_path: Path,
+    microbiome_h5_path: Optional[Path] = None,
+    paths: dict = None
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """
+    Load fixed-size microbiome sample embeddings + labels.
+    """
+    sample_csv_path = Path(sample_csv_path)
+    if paths is None:
+        paths = get_default_paths()
+
+    if microbiome_h5_path is None:
+        microbiome_h5_path = paths["microbiome_embeddings_h5"]
+    microbiome_h5_path = Path(microbiome_h5_path)
+
+    if not sample_csv_path.exists():
+        raise FileNotFoundError(f"Sample CSV file not found: {sample_csv_path}")
+    if not microbiome_h5_path.exists():
+        raise FileNotFoundError(f"Microbiome embeddings H5 file not found: {microbiome_h5_path}")
+
+    labels_dict = load_labels(sample_csv_path)
+
+    X_list = []
+    y_list = []
+    sids_list = []
+    missing_sids = []
+
+    with h5py.File(microbiome_h5_path, "r") as h5f:
+        available_sids = set(h5f.keys())
+
+        for sid, label in labels_dict.items():
+            if sid in available_sids:
+                vec = h5f[sid][:]  # (D_MODEL,)
+                X_list.append(vec)
+                y_list.append(int(label))
+                sids_list.append(sid)
+            else:
+                missing_sids.append(sid)
+
+    if missing_sids:
+        print(f"\nWarning: {len(missing_sids)} samples from CSV "
+              f"are missing in microbiome embeddings H5.")
+        print(f"  Example missing SIDs: {missing_sids[:5]}")
+
+    if not X_list:
+        raise ValueError(
+            "No samples were loaded from microbiome_embeddings.h5. "
+            "Check that the SIDs in your CSV match the H5 file."
+        )
+
+    X = np.stack(X_list, axis=0)
+    y = np.array(y_list, dtype=np.int64)
+
+    print(f"Loaded {X.shape[0]} microbiome sample embeddings "
+          f"from {microbiome_h5_path}")
+
+    return X, y, sids_list
+
+
+
 def load_dataset(
     sample_csv_path: Path,
     embeddings_h5_path: Optional[Path] = None,
@@ -797,12 +869,118 @@ def get_dataloader(
         collate_fn=collate_fn
     )
 
+# =================== MicrobiomeTransformer Embeddings Generate ==========
+
+def generate_microbiome_embeddings_h5(
+    prokbert_h5_path: Path,
+    output_h5_path: Path,
+    checkpoint_path: Path,
+    device: str = "cpu",
+) -> Path:
+    """
+    Generate microbiome sample embeddings H5 from ProkBERT OTU embeddings.
+
+    For each sample ID (group) in prokbert_h5_path:
+      - load all OTU embeddings (num_otus, 384)
+      - run them through the MicrobiomeTransformer encoder
+      - mean-pool over sequence length
+      - save a single vector per sample to output_h5_path
+
+    Output layout:
+      /<sid> -> (d_model,) float32
+    """
+    # Exit if already exists
+    if output_h5_path.exists():
+        print(f"Microbiome embeddings H5 already exists at {output_h5_path}")
+        return output_h5_path
+
+    # Check input H5 exists
+    if not prokbert_h5_path.exists():
+        raise FileNotFoundError(
+            f"ProkBERT embeddings H5 not found: {prokbert_h5_path}"
+        )
+
+    device_obj = torch.device(device)
+
+    # Checkpoint values from example_scripts/utils
+    D_MODEL = 100
+    NHEAD = 5
+    NUM_LAYERS = 5
+    DIM_FF = 400
+    OTU_EMB = 384
+    TXT_EMB = 1536
+    DROPOUT = 0.1
+
+    # Load checkpoint + model
+    checkpoint = torch.load(checkpoint_path, map_location=device_obj)
+    state_dict = checkpoint["model_state_dict"]
+
+    model = MicrobiomeTransformer(
+        input_dim_type1=OTU_EMB,
+        input_dim_type2=TXT_EMB,
+        d_model=D_MODEL,
+        nhead=NHEAD,
+        num_layers=NUM_LAYERS,
+        dim_feedforward=DIM_FF,
+        dropout=DROPOUT,
+        use_output_activation=False,  # just want features
+    )
+    model.load_state_dict(state_dict, strict=False)
+    model.to(device_obj)
+    model.eval()
+
+    output_h5_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(prokbert_h5_path, "r") as h_in:
+        sample_ids = list(h_in.keys())
+        if not sample_ids:
+            raise ValueError(
+                f"ProkBERT H5 file {prokbert_h5_path} contains no sample groups."
+            )
+
+        with h5py.File(output_h5_path, "w") as h_out:
+            for srs_id in tqdm(sample_ids, desc="Building microbiome sample embeddings"):
+                srs_group = h_in[srs_id]
+                otu_ids = list(srs_group.keys())
+                if not otu_ids:
+                    continue
+
+                # Stack OTU embeddings -> (num_otus, 384)
+                vectors = [srs_group[otu_id][:] for otu_id in otu_ids]
+                otu_tensor = torch.tensor(
+                    vectors, dtype=torch.float32, device=device_obj
+                ).unsqueeze(0)  # (1, num_otus, 384)
+
+                # No text embeddings in this step
+                type2_tensor = torch.zeros(
+                    (1, 0, TXT_EMB), dtype=torch.float32, device=device_obj
+                )
+                mask = torch.ones(
+                    (1, otu_tensor.shape[1]), dtype=torch.bool, device=device_obj
+                )
+
+                with torch.no_grad():
+                    hidden_type1 = model.input_projection_type1(otu_tensor)
+                    hidden_type2 = model.input_projection_type2(type2_tensor)
+                    combined_hidden = torch.cat([hidden_type1, hidden_type2], dim=1)
+                    hidden = model.transformer(
+                        combined_hidden, src_key_padding_mask=~mask
+                    )
+                    sample_vec = hidden.mean(dim=1).squeeze(0).cpu().numpy()  # (D_MODEL,)
+
+                h_out.create_dataset(srs_id, data=sample_vec)
+
+    print(f"\nSaved microbiome sample embeddings to {output_h5_path}")
+    return output_h5_path
+
+
+
 
 # ==================== Example Usage ====================
 
 if __name__ == "__main__":
     # Example usage
-    sample_csv = Path("data_preprocessing/datasets/sample_data_test.csv")
+    sample_csv = Path("data_preprocessing/datasets/sample_data.csv")
     
     try:
         print("Creating DataLoader...")
@@ -839,5 +1017,21 @@ if __name__ == "__main__":
         print("     Then run this script again to auto-generate embeddings")
     except Exception as e:
         print(f"\nUnexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # === MICROBIOME EMBEDDINGS: build microbiome embeddings AFTER PROKBERT H5 ===
+    try:
+        paths = get_default_paths()
+        print("\nBuilding microbiome sample embeddings from ProkBERT H5...")
+        generate_microbiome_embeddings_h5(
+            prokbert_h5_path=paths["embeddings_h5"],
+            output_h5_path=paths["microbiome_embeddings_h5"],
+            checkpoint_path=paths["checkpoint_path"],
+            device=paths["device"],
+        )
+    except Exception as e:
+        print("\nError while generating microbiome embeddings:")
+        print(e)
         import traceback
         traceback.print_exc()

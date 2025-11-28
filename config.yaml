@@ -7,11 +7,13 @@ data:
   srs_to_otu_parquet: "data_preprocessing/mapref_data/samples-otus-97.parquet"
   otu_to_dna_parquet: "data_preprocessing/mapref_data/otus_97_to_dna.parquet"
   dna_csv_dir: "data_preprocessing/dna_sequences"
-  # embeddings_h5: "data/prokbert_embeddings.h5"
+  embeddings_h5: "data_preprocessing/dna_embeddings/prokbert_embeddings.h5"
+  microbiome_embeddings_h5: "data_preprocessing/microbiome_embeddings/microbiome_embeddings.h5"
   # Embedding generation settings
+  checkpoint_path: "data/checkpoint_epoch_0_final_epoch3_conf00.pt"
   embedding_model: "neuralbioinfo/prokbert-mini-long"
   batch_size_embedding: 32
-  device: "mps"  # cpu, cuda, or mps
+  device: "cpu"  # cpu, cuda, or mps
   # ... other data args
 
 # model
