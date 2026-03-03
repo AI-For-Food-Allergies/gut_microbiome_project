@@ -289,16 +289,19 @@ class SKClassifier:
         # Determine scoring metric based on number of classes
         n_classes = len(np.unique(y))
         scoring_name = scoring  # Keep original for logging
-        if scoring is None:
-            if n_classes == 2:
+        if n_classes == 2:
+            if scoring is None:
                 scoring = "roc_auc"
                 scoring_name = "roc_auc"
-            else:
-                # Use custom scorer that handles missing classes in CV folds
-                scoring = make_scorer(
-                    _safe_roc_auc_scorer, response_method="predict_proba"
-                )
-                scoring_name = "roc_auc_ovr"
+            # else: use whatever scoring was passed (e.g., "roc_auc", "f1", etc.)
+        else:
+            # Multi-class: ALWAYS use custom scorer that handles missing classes in CV folds
+            # Override any string-based ROC-AUC scoring since sklearn's built-in doesn't
+            # handle folds where some classes are missing
+            scoring = make_scorer(
+                _safe_roc_auc_scorer, response_method="predict_proba"
+            )
+            scoring_name = "roc_auc_ovr"
 
         # Prefix params for Pipeline (classifier__param_name)
         pipeline_param_grid = self._prefix_params_for_pipeline(param_grid)
@@ -428,16 +431,17 @@ class SKClassifier:
             # Determine scoring metric based on number of classes
             n_classes = len(np.unique(y_train))
             scoring_name = scoring  # Keep original for logging
-            if scoring is None:
-                if n_classes == 2:
+            if n_classes == 2:
+                if scoring is None:
                     scoring = "roc_auc"
                     scoring_name = "roc_auc"
-                else:
-                    # Use custom scorer that handles missing classes in CV folds
-                    scoring = make_scorer(
-                        _safe_roc_auc_scorer, response_method="predict_proba"
-                    )
-                    scoring_name = "roc_auc_ovr"
+                # else: use whatever scoring was passed
+            else:
+                # Multi-class: ALWAYS use custom scorer that handles missing classes in CV folds
+                scoring = make_scorer(
+                    _safe_roc_auc_scorer, response_method="predict_proba"
+                )
+                scoring_name = "roc_auc_ovr"
 
             pipeline_param_grid = self._prefix_params_for_pipeline(param_grid)
 
