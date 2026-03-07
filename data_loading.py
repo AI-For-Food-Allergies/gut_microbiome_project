@@ -1537,6 +1537,13 @@ def load_train_test_datasets(
         # Load test set
         console.print(f"  Loading test set from: {test_path_str}", style="dim")
         cfg_dict["data"]["dataset_path"] = test_path_str
+        # Infer test dataset name and csv filename from the test path
+        # Expected path structure: huggingface_datasets/{DatasetName}/metadata/{file.csv}
+        test_path_obj = Path(test_path_str)
+        test_dataset_name = test_path_obj.parts[-3]  
+        test_csv_filename = test_path_obj.name        
+        cfg_dict["data"]["hugging_face"]["dataset_name"] = test_dataset_name
+        cfg_dict["data"]["hugging_face"]["csv_filename"] = test_csv_filename
         test_config = OmegaConf.create(cfg_dict)
         test_df = load_dataset_df(test_config, console=console)
 
