@@ -1084,15 +1084,60 @@ def sanity_check_dna_and_microbiome_embeddings(
     return True
 
 
-def create_dataset_df(dataset_path: Path, microbiome_embeddings_dir: Path):
+def load_abundance_for_sid(                                                                 #<-
+    sid: str,
+    abundance_h5: h5py.File,
+    ab_ids: List[str],
+    ab_matrix: np.ndarray,
+    abundance_dim: int,
+) -> np.ndarray:
+    """
+    Return the abundance vector for a given sample ID.
+    Falls back to a zero vector if the sample is not found in the abundance file.
+
+    Args:
+        sid: Sample ID
+        abundance_h5: Open h5py File handle for abundance.h5
+        ab_ids: List of sample IDs from abundance_matrix (pre-loaded)
+        ab_matrix: Full abundance matrix (n_samples, abundance_dim)
+        abundance_dim: Dimensionality of abundance vector
+    Returns:
+        numpy array of shape (abundance_dim,)
+    """
+    if sid in ab_ids:
+        idx = ab_ids.index(sid)
+        return ab_matrix[idx]
+    return np.zeros(abundance_dim, dtype=np.float32)                                         #<-
+
+
+def create_dataset_df(                                                                       #<-
+    dataset_path: Path,
+    microbiome_embeddings_dir: Path,
+    abundance_h5_path: Optional[Path] = None,
+    abundance_zero_pad_missing: bool = False,
+):
     """
     Iterate through the csv ids, take the label and use the id to look in the h5
-    file to get the microbiome embedding, then create a dataframe with the id, label, and microbiome embedding
+    file to get the microbiome embedding, then create a dataframe with the id, label, and embedding.
+
+    If abundance_h5_path is provided, the abundance vector is concatenated to the
+    microbiome embedding: final embedding = [microbiome (100) | abundance (2123)].
+
+    The 82 samples that have abundance but NO microbiome embedding are handled by
+    abundance_zero_pad_missing:
+      - False (default): drop them — only samples with a real microbiome embedding
+        are included. Safer for training; avoids injecting 100 zeros as a spurious signal.
+      - True: include them with a zero-padded microbiome embedding (100 zeros).
+        Gives more training samples; useful when the dataset is small.
+
     Args:
         dataset_path: Path to dataset csv
         microbiome_embeddings_dir: Path to microbiome embeddings directory
+        abundance_h5_path: Optional path to abundance.h5 for concatenation
+        abundance_zero_pad_missing: Whether to include abundance-only samples
+            by zero-padding their missing microbiome embedding (default: False)
     Returns:
-        DataFrame with id, label, and microbiome embedding
+        DataFrame with id, label, and embedding
     """
     dataset_df = pd.read_csv(dataset_path)
     microbiome_embeddings_h5_path = (
@@ -1104,23 +1149,65 @@ def create_dataset_df(dataset_path: Path, microbiome_embeddings_dir: Path):
             f"Microbiome embeddings H5 file not found: {microbiome_embeddings_h5_path}"
         )
 
+    # Pre-load abundance data if provided
+    ab_ids, ab_matrix, abundance_dim = [], None, 0
+    if abundance_h5_path is not None:
+        if not abundance_h5_path.exists():
+            raise FileNotFoundError(
+                f"Abundance H5 file not found: {abundance_h5_path}"
+            )
+        with h5py.File(abundance_h5_path, "r") as ab_h5:
+            ab_ids = list(ab_h5["sample_ids"][:].astype(str))
+            ab_matrix = ab_h5["abundance_matrix"][:]  # (n_samples, abundance_dim)
+            abundance_dim = ab_matrix.shape[1]
+        print(f"Loaded abundance matrix {ab_matrix.shape} from {abundance_h5_path}")
+
     # Read embeddings from H5 file using h5py
     embeddings_data = []
     with h5py.File(microbiome_embeddings_h5_path, "r") as h5f:
+        mb_sids = set(h5f.keys())
         for sid in h5f.keys():
-            embedding = h5f[sid][:]  # (D_MODEL,) numpy array
-            embeddings_data.append({"sid": sid, "embedding": embedding})
+            emb = h5f[sid][:]  # (D_MODEL,) numpy array
+            if abundance_h5_path is not None:
+                ab_vec = load_abundance_for_sid(sid, None, ab_ids, ab_matrix, abundance_dim)
+                emb = np.concatenate([emb, ab_vec])
+            embeddings_data.append({"sid": sid, "embedding": emb})
+
+        # Optionally include abundance-only samples (zero-pad microbiome side)
+        if abundance_h5_path is not None and abundance_zero_pad_missing:
+            microbiome_dim = list(h5f.values())[0].shape[0]
+            abundance_only = [s for s in ab_ids if s not in mb_sids]
+            if abundance_only:
+                print(
+                    f"Zero-padding microbiome embedding for {len(abundance_only)} "
+                    f"abundance-only samples (abundance_zero_pad_missing=True)"
+                )
+                for sid in abundance_only:
+                    mb_zeros = np.zeros(microbiome_dim, dtype=np.float32)
+                    ab_vec = load_abundance_for_sid(sid, None, ab_ids, ab_matrix, abundance_dim)
+                    emb = np.concatenate([mb_zeros, ab_vec])
+                    embeddings_data.append({"sid": sid, "embedding": emb})
 
     microbiome_embeddings_df = pd.DataFrame(embeddings_data)
     dataset_df = dataset_df.merge(
         microbiome_embeddings_df, left_on="sid", right_on="sid", how="left"
     )
 
-    return dataset_df
+    if abundance_h5_path is not None:
+        emb_dim = embeddings_data[0]["embedding"].shape[0]
+        print(
+            f"Final embedding dim: {emb_dim} "
+            f"(microbiome={emb_dim - abundance_dim} + abundance={abundance_dim})"
+        )
+
+    return dataset_df                                                                       #<-
 
 
-def create_dataset_df_from_unified(
-    dataset_path: Path, unified_embeddings_h5_path: Path
+def create_dataset_df_from_unified(                                                         #<-
+    dataset_path: Path,
+    unified_embeddings_h5_path: Path,
+    abundance_h5_path: Optional[Path] = None,
+    abundance_zero_pad_missing: bool = False,
 ) -> pd.DataFrame:
     """
     Create dataset DataFrame using unified embeddings file.
@@ -1129,12 +1216,25 @@ def create_dataset_df_from_unified(
     all sample IDs across all months/groups for a dataset. This allows
     for flexible loading of custom sample subsets without recomputing embeddings.
 
+    If abundance_h5_path is provided, the abundance vector is concatenated to the
+    microbiome embedding: final embedding = [microbiome (100) | abundance (2123)].
+
+    The 82 samples that have abundance but NO microbiome embedding are handled by
+    abundance_zero_pad_missing:
+      - False (default): drop them — only samples with a real microbiome embedding
+        are included. Safer for training; avoids injecting 100 zeros as a spurious signal.
+      - True: include them with a zero-padded microbiome embedding (100 zeros).
+        Gives more training samples; useful when the dataset is small.
+
     Args:
         dataset_path: Path to dataset csv with 'sid' and 'label' columns
         unified_embeddings_h5_path: Path to unified microbiome embeddings H5 file
+        abundance_h5_path: Optional path to abundance.h5 for concatenation
+        abundance_zero_pad_missing: Whether to include abundance-only samples
+            by zero-padding their missing microbiome embedding (default: False)
 
     Returns:
-        DataFrame with id, label, and microbiome embedding
+        DataFrame with id, label, and embedding
     """
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset CSV file not found: {dataset_path}")
@@ -1170,6 +1270,19 @@ def create_dataset_df_from_unified(
         # Remove duplicates, keeping first occurrence
         dataset_df = dataset_df.drop_duplicates(subset=["sid"], keep="first")
 
+    # Pre-load abundance data if provided
+    ab_ids, ab_matrix, abundance_dim = [], None, 0
+    if abundance_h5_path is not None:
+        if not abundance_h5_path.exists():
+            raise FileNotFoundError(
+                f"Abundance H5 file not found: {abundance_h5_path}"
+            )
+        with h5py.File(abundance_h5_path, "r") as ab_h5:
+            ab_ids = list(ab_h5["sample_ids"][:].astype(str))
+            ab_matrix = ab_h5["abundance_matrix"][:]  # (n_samples, abundance_dim)
+            abundance_dim = ab_matrix.shape[1]
+        print(f"Loaded abundance matrix {ab_matrix.shape} from {abundance_h5_path}")
+
     # Read embeddings from unified H5 file (now only for unique SIDs)
     embeddings_data = []
     missing_sids = []
@@ -1179,8 +1292,11 @@ def create_dataset_df_from_unified(
 
         for sid in dataset_df["sid"]:
             if sid in available_sids:
-                embedding = h5f[sid][:]  # (D_MODEL,) numpy array
-                embeddings_data.append({"sid": sid, "embedding": embedding})
+                emb = h5f[sid][:]  # (D_MODEL,) numpy array
+                if abundance_h5_path is not None:
+                    ab_vec = load_abundance_for_sid(sid, None, ab_ids, ab_matrix, abundance_dim)
+                    emb = np.concatenate([emb, ab_vec])
+                embeddings_data.append({"sid": sid, "embedding": emb})
             else:
                 missing_sids.append(sid)
 
@@ -1195,6 +1311,21 @@ def create_dataset_df_from_unified(
                 "Check that you're using the correct unified embeddings file for this dataset."
             )
 
+    # Optionally include abundance-only samples (zero-pad microbiome side)
+    if abundance_h5_path is not None and abundance_zero_pad_missing and embeddings_data:
+        microbiome_dim = embeddings_data[0]["embedding"].shape[0] - abundance_dim
+        abundance_only = [s for s in ab_ids if s not in available_sids]
+        if abundance_only:
+            print(
+                f"Zero-padding microbiome embedding for {len(abundance_only)} "
+                f"abundance-only samples (abundance_zero_pad_missing=True)"
+            )
+            for sid in abundance_only:
+                mb_zeros = np.zeros(microbiome_dim, dtype=np.float32)
+                ab_vec = load_abundance_for_sid(sid, None, ab_ids, ab_matrix, abundance_dim)
+                emb = np.concatenate([mb_zeros, ab_vec])
+                embeddings_data.append({"sid": sid, "embedding": emb})
+
     if not embeddings_data:
         raise ValueError(
             "No embeddings loaded from unified file. "
@@ -1205,7 +1336,7 @@ def create_dataset_df_from_unified(
     microbiome_embeddings_df = pd.DataFrame(embeddings_data)
     dataset_df = dataset_df.merge(
         microbiome_embeddings_df, left_on="sid", right_on="sid", how="inner"
-    )
+    )                                                                                      #<- 
 
     print(f"Loaded {len(dataset_df)} samples from unified embeddings")
 
@@ -1293,27 +1424,41 @@ def download_dataset_from_hf(
     return dataset_path, sequences_dir, dna_embeddings_dir, microbiome_embeddings_dir
 
 
-def load_dataset_df(config: DictConfig, console: Console) -> pd.DataFrame:
+def load_dataset_df(config: DictConfig, console: Console) -> pd.DataFrame:                        #<-
     """
-    Process dataset and return dataframe with id, label, and microbiome embedding.
+    Process dataset and return dataframe with id, label, and embedding.
 
     Supports two modes:
     1. Unified mode (use_unified_embeddings=True): Load from unified embeddings file
-       - Fast and flexible for custom sample subsets
-       - No need to recompute embeddings for each subset
-
     2. Standard mode (use_unified_embeddings=False): Traditional pipeline
-       - extract csv sequences from dataset
-       - generate dna embeddings from csv sequences
-       - generate microbiome embeddings from dna embeddings
-       - sanity check for consistency on dna embeddings and microbiome embeddings
-       - create dataframe relating labels from dataset csv and corresponding microbiome embeddings
+
+    If config.data.abundance_h5_path is set, the abundance vector is concatenated
+    to every microbiome embedding (option 2 fusion):
+      final embedding = [microbiome (100) | abundance (2123)]
+    Missing abundance samples are zero-padded.
 
     Args:
         config: Configuration dictionary
     Returns:
-        DataFrame with id, label, and microbiome embedding
+        DataFrame with id, label, and embedding
     """
+    # Resolve optional abundance path
+    abundance_h5_path = None
+    raw_abundance_path = getattr(config.data, "abundance_h5_path", None)
+    if raw_abundance_path:
+        abundance_h5_path = Path(raw_abundance_path)
+        console.print(f"Abundance concatenation enabled: {abundance_h5_path}", style="info")
+
+    abundance_zero_pad_missing = bool(
+        getattr(config.data, "abundance_zero_pad_missing", False)
+    )
+    if abundance_h5_path is not None:
+        console.print(
+            f"abundance_zero_pad_missing={abundance_zero_pad_missing} "
+            f"({'including' if abundance_zero_pad_missing else 'dropping'} "
+            f"the ~82 samples with abundance but no microbiome embedding)",
+            style="info",
+        )
 
     if config.data.hugging_face.pull_from_huggingface:
         dataset_path, sequences_dir, dna_embeddings_dir, microbiome_embeddings_dir = (
@@ -1371,7 +1516,11 @@ def load_dataset_df(config: DictConfig, console: Console) -> pd.DataFrame:
                 console.print(
                     f"Using unified embeddings from: {unified_path}", style="success"
                 )
-                dataset_df = create_dataset_df_from_unified(dataset_path, unified_path)
+                dataset_df = create_dataset_df_from_unified(
+                    dataset_path, unified_path,
+                    abundance_h5_path=abundance_h5_path,
+                    abundance_zero_pad_missing=abundance_zero_pad_missing,
+                )
                 print(
                     f"Created dataset dataframe with {len(dataset_df)} rows and {len(dataset_df.columns)} columns"
                 )
@@ -1442,7 +1591,11 @@ def load_dataset_df(config: DictConfig, console: Console) -> pd.DataFrame:
         console.print("Data sanity check passed")
 
     # create dataframe relating labels from dataset csv and corresponding microbiome embeddings
-    dataset_df = create_dataset_df(dataset_path, microbiome_embeddings_dir)
+    dataset_df = create_dataset_df(
+        dataset_path, microbiome_embeddings_dir,
+        abundance_h5_path=abundance_h5_path,
+        abundance_zero_pad_missing=abundance_zero_pad_missing,
+    )
     console.print(
         f"Created dataset dataframe with {len(dataset_df)} rows and {len(dataset_df.columns)} columns",
         style="success",
@@ -1540,13 +1693,13 @@ def load_train_test_datasets(
         # Infer test dataset name and csv filename from the test path
         # Expected path structure: huggingface_datasets/{DatasetName}/metadata/{file.csv}
         test_path_obj = Path(test_path_str)
-        test_dataset_name = test_path_obj.parts[-3]  
-        test_csv_filename = test_path_obj.name        
+        test_dataset_name = test_path_obj.parts[-3]  # e.g. "Gadir"
+        test_csv_filename = test_path_obj.name        # e.g. "gadir_all_months.csv"
         cfg_dict["data"]["hugging_face"]["dataset_name"] = test_dataset_name
         cfg_dict["data"]["hugging_face"]["csv_filename"] = test_csv_filename
         test_config = OmegaConf.create(cfg_dict)
         test_df = load_dataset_df(test_config, console=console)
-
+        
         # --- Schema alignment check ---
         train_cols = set(train_df.columns)
         test_cols = set(test_df.columns)
