@@ -26,8 +26,9 @@ use_unified_embeddings: true
 # Set to the path of your abundance.h5 file to enable, leave empty ("") to disable.
 # When enabled: final embedding = [microbiome (100) | abundance (2123)]
 # Samples missing from the abundance file are zero-padded.
-#abundance_h5_path: ""                                                                     #<-
-abundance_h5_path: "data_preprocessing/abundance/abundance.h5"
+abundance_h5_path: ""
+# When set (either here or via a dataset config), the abundance vector is
+# concatenated to the microbiome embedding. Leave empty to disable.
 
 # How to handle the samples that have abundance but NO microbiome embedding.
 # Only relevant when abundance_h5_path is set.
@@ -35,11 +36,14 @@ abundance_h5_path: "data_preprocessing/abundance/abundance.h5"
 #     embedding are used. 
 #   true: include them by zero-padding the missing microbiome embedding.
 abundance_zero_pad_missing: false                                                         #<-
-abundance_only: true
+
+# When true: skip DNA/microbiome embedding generation entirely and train
+# on abundance vectors alone. Requires abundance_h5_path to be set.
+abundance_only: false
 
 hugging_face:
   download_path: "huggingface_datasets"
-  dataset_name: "Abundance"
+  dataset_name: "Tanaka"
   # Overwritten by dataset configs
   # Examples: "Tanaka", "Diabimmune", "Goldberg", "Gadir"
   base_repo_url: "https://huggingface.co/datasets/hugging-science"

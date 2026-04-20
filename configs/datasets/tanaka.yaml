@@ -3,6 +3,8 @@ _target_dataset_name: "tanaka"
 
 dataset_path: "data_preprocessing/datasets/tanaka/month_2.csv"
 
+abundance_h5_path: "huggingface_datasets/Tanaka/processed/abundance_data/abundance.h5"
+
 hugging_face:
   dataset_name: "Tanaka"
   csv_filename: "month_2.csv"

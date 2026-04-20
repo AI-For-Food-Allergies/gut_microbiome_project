@@ -289,6 +289,13 @@ python main.py datasets=goldberg
 python main.py datasets=tanaka
 ```
 
+#### Abundance-only mode
+Train on abundance vectors alone, skipping the DNA/microbiome embedding
+pipeline. Each dataset config already points at its own `abundance.h5`:
+```bash
+python main.py datasets=diabimmune data.abundance_only=true
+```
+
 #### Enable Experiment Tracking
 ```bash
 # Enable tracking to Hugging Face spaces

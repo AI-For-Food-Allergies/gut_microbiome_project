@@ -1110,6 +1110,67 @@ def load_abundance_for_sid(                                                     
     return np.zeros(abundance_dim, dtype=np.float32)                                         #<-
 
 
+def create_abundance_only_df(
+    dataset_path: Path,
+    abundance_h5_path: Path,
+) -> pd.DataFrame:
+    """
+    Build an abundance-only dataset DataFrame.
+
+    Reads the dataset CSV (must have sid/label) and joins each sid with its
+    abundance vector from abundance.h5. Samples missing from the H5 are dropped
+    (zero-padding would collapse the only feature source).
+
+    Returns DataFrame with columns sid, label, embedding.
+    """
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Dataset CSV file not found: {dataset_path}")
+    if not abundance_h5_path.exists():
+        raise FileNotFoundError(f"Abundance H5 file not found: {abundance_h5_path}")
+
+    dataset_df = pd.read_csv(dataset_path)
+    if "sid" not in dataset_df.columns:
+        raise ValueError(
+            f"Dataset CSV must contain 'sid' column. Found: {dataset_df.columns.tolist()}"
+        )
+
+    with h5py.File(abundance_h5_path, "r") as ab_h5:
+        ab_ids = list(ab_h5["sample_ids"][:].astype(str))
+        ab_matrix = ab_h5["abundance_matrix"][:]
+        abundance_dim = ab_matrix.shape[1]
+    print(f"Loaded abundance matrix {ab_matrix.shape} from {abundance_h5_path}")
+
+    ab_id_set = set(ab_ids)
+    embeddings_data = []
+    missing = []
+    for sid in dataset_df["sid"]:
+        if sid in ab_id_set:
+            embeddings_data.append({
+                "sid": sid,
+                "embedding": ab_matrix[ab_ids.index(sid)],
+            })
+        else:
+            missing.append(sid)
+
+    if missing:
+        print(
+            f"Warning: {len(missing)} sample IDs from CSV not found in abundance.h5 "
+            f"(dropping). Examples: {missing[:5]}"
+        )
+    if not embeddings_data:
+        raise ValueError(
+            "No samples from the dataset CSV were found in abundance.h5. "
+            "Check that abundance_h5_path matches the dataset."
+        )
+
+    embeddings_df = pd.DataFrame(embeddings_data)
+    dataset_df = dataset_df.merge(embeddings_df, on="sid", how="inner")
+    print(
+        f"Abundance-only: {len(dataset_df)} samples, embedding dim = {abundance_dim}"
+    )
+    return dataset_df
+
+
 def create_dataset_df(                                                                       #<-
     dataset_path: Path,
     microbiome_embeddings_dir: Path,
@@ -1460,6 +1521,12 @@ def load_dataset_df(config: DictConfig, console: Console) -> pd.DataFrame:      
             style="info",
         )
 
+    abundance_only = bool(getattr(config.data, "abundance_only", False))
+    if abundance_only and abundance_h5_path is None:
+        raise ValueError(
+            "abundance_only=True requires data.abundance_h5_path to be set."
+        )
+
     if config.data.hugging_face.pull_from_huggingface:
         dataset_path, sequences_dir, dna_embeddings_dir, microbiome_embeddings_dir = (
             download_dataset_from_hf(config=config, console=console)
@@ -1469,6 +1536,19 @@ def load_dataset_df(config: DictConfig, console: Console) -> pd.DataFrame:      
         sequences_dir, dna_embeddings_dir, microbiome_embeddings_dir = build_paths(
             config, dataset_path
         )
+
+    if abundance_only:
+        console.print(
+            "abundance_only=True — skipping DNA/microbiome pipeline",
+            style="info",
+        )
+        dataset_df = create_abundance_only_df(dataset_path, abundance_h5_path)
+        console.print(
+            f"Created dataset dataframe with {len(dataset_df)} rows and "
+            f"{len(dataset_df.columns)} columns",
+            style="success",
+        )
+        return dataset_df
 
     # Check if unified embeddings should be used
     if config.data.use_unified_embeddings:
