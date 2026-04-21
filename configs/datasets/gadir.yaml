@@ -3,6 +3,8 @@ _target_dataset_name: "gadir"
 
 dataset_path: "data_preprocessing/datasets/gadir/gadir_all_months.csv"
 
+abundance_h5_path: "huggingface_datasets/Gadir/processed/abundance_data/abundance.h5"
+
 hugging_face:
   dataset_name: "Gadir"
   csv_filename: "gadir_all_months.csv"

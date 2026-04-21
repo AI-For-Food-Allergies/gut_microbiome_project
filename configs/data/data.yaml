@@ -22,13 +22,32 @@ device: "cpu"  # cpu, cuda, or mps
 # Run 'python create_unified_embeddings.py' first to generate unified files
 use_unified_embeddings: true
 
+# Option 2 fusion: concatenate abundance counts to microbiome embeddings
+# Set to the path of your abundance.h5 file to enable, leave empty ("") to disable.
+# When enabled: final embedding = [microbiome (100) | abundance (2123)]
+# Samples missing from the abundance file are zero-padded.
+abundance_h5_path: ""
+# When set (either here or via a dataset config), the abundance vector is
+# concatenated to the microbiome embedding. Leave empty to disable.
+
+# How to handle the samples that have abundance but NO microbiome embedding.
+# Only relevant when abundance_h5_path is set.
+#   false (default): drop them and only samples with a real microbiome
+#     embedding are used. 
+#   true: include them by zero-padding the missing microbiome embedding.
+abundance_zero_pad_missing: false                                                         #<-
+
+# When true: skip DNA/microbiome embedding generation entirely and train
+# on abundance vectors alone. Requires abundance_h5_path to be set.
+abundance_only: false
+
 hugging_face:
   download_path: "huggingface_datasets"
-  dataset_name: ""
+  dataset_name: "Tanaka"
   # Overwritten by dataset configs
   # Examples: "Tanaka", "Diabimmune", "Goldberg", "Gadir"
   base_repo_url: "https://huggingface.co/datasets/hugging-science"
-  pull_from_huggingface: true
-  csv_filename: "month_2.csv"
+  pull_from_huggingface: false
+  csv_filename: "abundance.csv"
   # e.g., "Month_2.csv" for Diabimmune, "T1.csv" for Goldberg,
   # "gadir_all_months.csv" for Gadir, "month_2.csv" for Tanaka

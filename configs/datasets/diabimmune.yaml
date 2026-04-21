@@ -3,6 +3,8 @@ _target_dataset_name: "diabimmune"
 
 dataset_path: "data_preprocessing/datasets/diabimmune/Month_3.csv"
 
+abundance_h5_path: "huggingface_datasets/Diabimmune/processed/abundance_data/abundance.h5"
+
 hugging_face:
   dataset_name: "Diabimmune"
   csv_filename: "Month_3.csv"
