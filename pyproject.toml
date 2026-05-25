@@ -3,10 +3,10 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "diabimmune-example"
+name = "gut-microbiome-project"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "ML-based prediction of food allergy development from gut microbiome data"
+readme = "readme.md"
 requires-python = ">=3.12"
 dependencies = [
     "h5py>=3.15.1",
@@ -30,4 +30,5 @@ packages = ["modules", "utils"]
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
+    "pytest>=8.0.0",
 ]
