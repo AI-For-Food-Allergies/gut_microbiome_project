@@ -8,12 +8,60 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.metrics import classification_report
 from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import roc_auc_score, make_scorer
 import joblib
 import numpy as np
 from typing import Dict, Any
 from utils.evaluation_utils import EvaluationMetrics
 from omegaconf import DictConfig
 from rich.console import Console
+
+
+def _safe_roc_auc_scorer(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """ROC-AUC scorer that handles missing classes in CV folds.
+    
+    When some classes are missing from y_true (e.g., in a CV fold),
+    this scorer subsets y_score to matching columns, renormalizes
+    probabilities, and computes macro ROC-AUC on present classes.
+    """
+    classes_in_fold = np.unique(y_true)
+    n_classes_in_fold = len(classes_in_fold)
+    
+    if n_classes_in_fold < 2:
+        return np.nan  # Can't compute ROC with fewer than 2 classes
+    
+    # Binary case
+    if n_classes_in_fold == 2:
+        if y_score.ndim == 2:
+            # Check if classes are 0,1 or need remapping
+            if set(classes_in_fold) == {0, 1}:
+                return roc_auc_score(y_true, y_score[:, 1])
+            else:
+                # Remap to binary 0,1
+                y_score_subset = y_score[:, classes_in_fold]
+                y_score_binary = y_score_subset[:, 1] / y_score_subset.sum(axis=1)
+                label_map = {c: i for i, c in enumerate(classes_in_fold)}
+                y_true_remapped = np.array([label_map[y] for y in y_true])
+                return roc_auc_score(y_true_remapped, y_score_binary)
+        return roc_auc_score(y_true, y_score)
+    
+    # Multi-class: check if we need to handle missing classes
+    n_cols = y_score.shape[1] if y_score.ndim == 2 else 1
+    
+    if y_score.ndim == 2 and n_cols > n_classes_in_fold:
+        # Subset y_score to only classes present in y_true
+        y_score_subset = y_score[:, classes_in_fold]
+        # Renormalize probabilities to sum to 1
+        y_score_subset = y_score_subset / y_score_subset.sum(axis=1, keepdims=True)
+        # Remap y_true to 0..n_classes-1
+        label_map = {c: i for i, c in enumerate(classes_in_fold)}
+        y_true_remapped = np.array([label_map[y] for y in y_true])
+        return roc_auc_score(
+            y_true_remapped, y_score_subset, multi_class='ovr', average='macro'
+        )
+    
+    # All classes present - standard computation
+    return roc_auc_score(y_true, y_score, multi_class='ovr', average='macro')
 
 
 class SKClassifier:
@@ -140,12 +188,14 @@ class SKClassifier:
 
         # Get probability predictions (for ROC-AUC)
         y_prob = None
+        n_classes = len(np.unique(y))
         try:
             y_prob_all = cross_val_predict(
                 self.pipeline, X, y, cv=skf, method="predict_proba"
             )
             # For binary classification, take probability of positive class
-            if y_prob_all.shape[1] == 2:
+            # For multi-class, keep full probability matrix
+            if n_classes == 2:
                 y_prob = y_prob_all[:, 1]
             else:
                 y_prob = y_prob_all
@@ -193,7 +243,7 @@ class SKClassifier:
         param_grid: Dict[str, Any],
         grid_search_cv: int = 5,
         final_eval_cv: int = 5,
-        scoring: str = "roc_auc",
+        scoring: str | None = None,
         grid_search_random_state: int = 42,
         final_eval_random_state: int = 123,
         verbose: bool = True,
@@ -236,6 +286,23 @@ class SKClassifier:
             )
             self.console.print(f"Parameter grid: {param_grid}", style="dim")
 
+        # Determine scoring metric based on number of classes
+        n_classes = len(np.unique(y))
+        scoring_name = scoring  # Keep original for logging
+        if n_classes == 2:
+            if scoring is None:
+                scoring = "roc_auc"
+                scoring_name = "roc_auc"
+            # else: use whatever scoring was passed (e.g., "roc_auc", "f1", etc.)
+        else:
+            # Multi-class: ALWAYS use custom scorer that handles missing classes in CV folds
+            # Override any string-based ROC-AUC scoring since sklearn's built-in doesn't
+            # handle folds where some classes are missing
+            scoring = make_scorer(
+                _safe_roc_auc_scorer, response_method="predict_proba"
+            )
+            scoring_name = "roc_auc_ovr"
+
         # Prefix params for Pipeline (classifier__param_name)
         pipeline_param_grid = self._prefix_params_for_pipeline(param_grid)
 
@@ -263,7 +330,7 @@ class SKClassifier:
         if verbose:
             self.console.print(f"\nBest parameters: {best_params}", style="bold yellow")
             self.console.print(
-                f"Best {scoring} score (grid search CV): {best_score:.4f}",
+                f"Best {scoring_name} score (grid search CV): {best_score:.4f}",
                 style="bold yellow",
             )
 
@@ -293,10 +360,10 @@ class SKClassifier:
         if verbose:
             self.console.print(f"\n{'=' * 60}")
             self.console.print(
-                f"Grid Search CV {scoring}: {best_score:.4f}", style="bold yellow"
+                f"Grid Search CV {scoring_name}: {best_score:.4f}", style="bold yellow"
             )
             self.console.print(
-                f"Final Unbiased {scoring}: {metrics.roc_auc:.4f}"
+                f"Final Unbiased {scoring_name}: {metrics.roc_auc:.4f}"
                 if metrics.roc_auc
                 else ""
             )
@@ -312,7 +379,7 @@ class SKClassifier:
         y_test: np.ndarray,
         param_grid: Dict[str, Any] = None,
         grid_search_cv: int = 5,
-        scoring: str = "roc_auc",
+        scoring: str | None = None,
         grid_search_random_state: int = 42,
         verbose: bool = True,
     ) -> EvaluationMetrics:
@@ -351,7 +418,7 @@ class SKClassifier:
         # Validate no data leakage between train and test sets
         self._validate_no_data_leakage(X_train, X_test)
 
-        # Phase 1: Optional grid search on training set
+    # Phase 1: Optional grid search on training set
         if param_grid is not None:
             if verbose:
                 self.console.print(
@@ -360,6 +427,21 @@ class SKClassifier:
                     style="bold",
                 )
                 self.console.print(f"Parameter grid: {param_grid}", style="dim")
+
+            # Determine scoring metric based on number of classes
+            n_classes = len(np.unique(y_train))
+            scoring_name = scoring  # Keep original for logging
+            if n_classes == 2:
+                if scoring is None:
+                    scoring = "roc_auc"
+                    scoring_name = "roc_auc"
+                # else: use whatever scoring was passed
+            else:
+                # Multi-class: ALWAYS use custom scorer that handles missing classes in CV folds
+                scoring = make_scorer(
+                    _safe_roc_auc_scorer, response_method="predict_proba"
+                )
+                scoring_name = "roc_auc_ovr"
 
             pipeline_param_grid = self._prefix_params_for_pipeline(param_grid)
 
@@ -388,7 +470,7 @@ class SKClassifier:
                     f"\nBest parameters: {best_params}", style="bold yellow"
                 )
                 self.console.print(
-                    f"Best {scoring} score (grid search CV): {best_score:.4f}",
+                    f"Best {scoring_name} score (grid search CV): {best_score:.4f}",
                     style="bold yellow",
                 )
 
@@ -405,9 +487,12 @@ class SKClassifier:
 
         y_pred = self.pipeline.predict(X_test)
         y_prob = None
+        n_classes = len(np.unique(y_test))
         try:
             y_prob_all = self.pipeline.predict_proba(X_test)
-            if y_prob_all.shape[1] == 2:
+            # For binary classification, take probability of positive class
+            # For multi-class, keep full probability matrix
+            if n_classes == 2:
                 y_prob = y_prob_all[:, 1]
             else:
                 y_prob = y_prob_all

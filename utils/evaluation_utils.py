@@ -53,7 +53,13 @@ class EvaluationMetrics:
         # Compute ROC-AUC if probabilities available
         if self.y_prob is not None:
             try:
-                self.roc_auc = roc_auc_score(self.y_true, self.y_prob)
+                n_classes = len(np.unique(self.y_true))
+                if n_classes == 2:
+                    self.roc_auc = roc_auc_score(self.y_true, self.y_prob)
+                else:
+                    self.roc_auc = roc_auc_score(
+                        self.y_true, self.y_prob, multi_class="ovr", average="macro"
+                    )
             except Exception:
                 self.roc_auc = None
 
@@ -175,7 +181,13 @@ class ResultsManager:
         # Add ROC-AUC if probabilities available
         if result.has_probabilities:
             try:
-                roc_auc = roc_auc_score(result.y_true, result.y_prob)
+                n_classes = len(np.unique(result.y_true))
+                if n_classes == 2:
+                    roc_auc = roc_auc_score(result.y_true, result.y_prob)
+                else:
+                    roc_auc = roc_auc_score(
+                        result.y_true, result.y_prob, multi_class="ovr", average="macro"
+                    )
                 report_df["roc_auc"] = roc_auc
             except Exception:
                 pass
@@ -223,21 +235,46 @@ class ResultsManager:
             return None
 
         try:
-            # Calculate ROC curve
-            fpr, tpr, thresholds = roc_curve(result.y_true, result.y_prob)
-            roc_auc = roc_auc_score(result.y_true, result.y_prob)
-
-            # Create plot
+            n_classes = len(np.unique(result.y_true))
             fig, ax = plt.subplots(figsize=figsize)
 
-            # Plot ROC curve
-            ax.plot(
-                fpr,
-                tpr,
-                color="#2563eb",
-                lw=2,
-                label=f"{result.classifier_name} (AUC = {roc_auc:.3f})",
-            )
+            if n_classes == 2:
+                # Binary classification: single ROC curve
+                fpr, tpr, _ = roc_curve(result.y_true, result.y_prob)
+                roc_auc = roc_auc_score(result.y_true, result.y_prob)
+                ax.plot(
+                    fpr,
+                    tpr,
+                    color="#2563eb",
+                    lw=2,
+                    label=f"{result.classifier_name} (AUC = {roc_auc:.3f})",
+                )
+            else:
+                # Multi-class: per-class One-vs-Rest ROC curves
+                classes = np.unique(result.y_true)
+                colors = plt.cm.tab10(np.linspace(0, 1, len(classes)))
+                
+                for idx, (cls, color) in enumerate(zip(classes, colors)):
+                    # Binarize for this class
+                    y_binary = (result.y_true == cls).astype(int)
+                    y_score = result.y_prob[:, idx]
+                    
+                    fpr, tpr, _ = roc_curve(y_binary, y_score)
+                    class_auc = roc_auc_score(y_binary, y_score)
+                    
+                    class_name = self.class_names[idx] if self.class_names else str(cls)
+                    ax.plot(
+                        fpr,
+                        tpr,
+                        color=color,
+                        lw=2,
+                        label=f"{class_name} (AUC = {class_auc:.3f})",
+                    )
+                
+                # Compute macro-averaged AUC for title
+                roc_auc = roc_auc_score(
+                    result.y_true, result.y_prob, multi_class="ovr", average="macro"
+                )
 
             # Plot diagonal reference line
             ax.plot(
@@ -259,8 +296,9 @@ class ResultsManager:
                 "Holdout Test Set" if result.cv_folds == 0
                 else f"{result.cv_folds}-Fold CV"
             )
+            title_suffix = "" if n_classes == 2 else f" (Macro AUC = {roc_auc:.3f})"
             ax.set_title(
-                f"ROC Curve - {result.classifier_name}{tuned_text} [{eval_text}]\n"
+                f"ROC Curve - {result.classifier_name}{tuned_text}{title_suffix} [{eval_text}]\n"
                 f"Dataset: {self.dataset_name}/{self.data_source}",
                 fontsize=13,
             )
@@ -443,7 +481,16 @@ class ResultsManager:
                 # Add ROC-AUC if available
                 if result.has_probabilities:
                     try:
-                        row["roc_auc"] = roc_auc_score(result.y_true, result.y_prob)
+                        n_classes = len(np.unique(result.y_true))
+                        if n_classes == 2:
+                            row["roc_auc"] = roc_auc_score(result.y_true, result.y_prob)
+                        else:
+                            row["roc_auc"] = roc_auc_score(
+                                result.y_true,
+                                result.y_prob,
+                                multi_class="ovr",
+                                average="macro",
+                            )
                     except Exception:
                         pass
 
@@ -480,21 +527,48 @@ class ResultsManager:
         # Create figure
         fig, ax = plt.subplots(figsize=figsize)
 
+        # Determine if we're in multi-class mode (check first result)
+        first_result = results_with_probs[0]
+        n_classes = len(np.unique(first_result.y_true))
+
         # Color palette
         colors = plt.cm.tab10(np.linspace(0, 1, len(results_with_probs)))
 
         # Plot each classifier
         for result, color in zip(results_with_probs, colors):
-            fpr, tpr, _ = roc_curve(result.y_true, result.y_prob)
-            roc_auc = roc_auc_score(result.y_true, result.y_prob)
-
-            ax.plot(
-                fpr,
-                tpr,
-                color=color,
-                lw=2,
-                label=f"{result.classifier_name} (AUC = {roc_auc:.3f})",
-            )
+            if n_classes == 2:
+                # Binary: single curve per classifier
+                fpr, tpr, _ = roc_curve(result.y_true, result.y_prob)
+                roc_auc = roc_auc_score(result.y_true, result.y_prob)
+                ax.plot(
+                    fpr,
+                    tpr,
+                    color=color,
+                    lw=2,
+                    label=f"{result.classifier_name} (AUC = {roc_auc:.3f})",
+                )
+            else:
+                # Multi-class: macro-averaged AUC, plot mean ROC across classes
+                roc_auc = roc_auc_score(
+                    result.y_true, result.y_prob, multi_class="ovr", average="macro"
+                )
+                # For comparison plot, compute mean ROC across all classes
+                classes = np.unique(result.y_true)
+                mean_fpr = np.linspace(0, 1, 100)
+                tprs = []
+                for idx, cls in enumerate(classes):
+                    y_binary = (result.y_true == cls).astype(int)
+                    y_score = result.y_prob[:, idx]
+                    fpr, tpr, _ = roc_curve(y_binary, y_score)
+                    tprs.append(np.interp(mean_fpr, fpr, tpr))
+                mean_tpr = np.mean(tprs, axis=0)
+                ax.plot(
+                    mean_fpr,
+                    mean_tpr,
+                    color=color,
+                    lw=2,
+                    label=f"{result.classifier_name} (Macro AUC = {roc_auc:.3f})",
+                )
 
         # Plot diagonal
         ax.plot(
@@ -552,36 +626,76 @@ def compute_and_store_roc(
     """
     Compute and store ROC curve data and plot.
 
+    For binary classification, stores single ROC curve.
+    For multi-class, stores per-class OvR ROC curves with macro-averaged AUC.
+
     Args:
         y: True labels
-        y_prob: Predicted probabilities
+        y_prob: Predicted probabilities (1D for binary, 2D for multi-class)
         output_path: Base path for output (without extension)
         classifier_name: Name of the classifier for labeling
 
     Returns:
         Dictionary with ROC data (fpr, tpr, thresholds, roc_auc)
     """
-    fpr, tpr, thresholds = roc_curve(y, y_prob)
-    roc_auc = roc_auc_score(y, y_prob)
+    n_classes = len(np.unique(y))
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    if n_classes == 2:
+        # Binary classification
+        fpr, tpr, thresholds = roc_curve(y, y_prob)
+        roc_auc = roc_auc_score(y, y_prob)
+
+        roc_data = {"fpr": fpr, "tpr": tpr, "thresholds": thresholds, "roc_auc": roc_auc}
+
+        ax.plot(
+            fpr,
+            tpr,
+            color="#2563eb",
+            lw=2,
+            label=f"{classifier_name} (AUC = {roc_auc:.3f})",
+        )
+    else:
+        # Multi-class: per-class OvR ROC curves
+        classes = np.unique(y)
+        colors = plt.cm.tab10(np.linspace(0, 1, len(classes)))
+        roc_data = {"roc_auc_macro": None, "per_class": {}}
+
+        for idx, (cls, color) in enumerate(zip(classes, colors)):
+            y_binary = (y == cls).astype(int)
+            y_score = y_prob[:, idx]
+
+            fpr, tpr, thresholds = roc_curve(y_binary, y_score)
+            class_auc = roc_auc_score(y_binary, y_score)
+
+            roc_data["per_class"][str(cls)] = {
+                "fpr": fpr,
+                "tpr": tpr,
+                "thresholds": thresholds,
+                "roc_auc": class_auc,
+            }
+
+            ax.plot(
+                fpr,
+                tpr,
+                color=color,
+                lw=2,
+                label=f"Class {cls} (AUC = {class_auc:.3f})",
+            )
+
+        roc_auc = roc_auc_score(y, y_prob, multi_class="ovr", average="macro")
+        roc_data["roc_auc_macro"] = roc_auc
+        roc_data["roc_auc"] = roc_auc
 
     # Store ROC data as NPZ
-    roc_data = {"fpr": fpr, "tpr": tpr, "thresholds": thresholds, "roc_auc": roc_auc}
     npz_path = str(output_path) + ".npz"
-    np.savez(npz_path, **roc_data)
+    np.savez(npz_path, **{k: v for k, v in roc_data.items() if not isinstance(v, dict)})
 
-    # Plot ROC curve
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(
-        fpr,
-        tpr,
-        color="#2563eb",
-        lw=2,
-        label=f"{classifier_name} (AUC = {roc_auc:.3f})",
-    )
     ax.plot([0, 1], [0, 1], color="#94a3b8", lw=1.5, linestyle="--")
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
-    ax.set_title("Receiver Operating Characteristic")
+    title_suffix = "" if n_classes == 2 else f" (Macro AUC = {roc_auc:.3f})"
+    ax.set_title(f"Receiver Operating Characteristic{title_suffix}")
     ax.legend(loc="lower right")
     ax.grid(True, alpha=0.3)
 
